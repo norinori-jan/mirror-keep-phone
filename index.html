@@ -1,0 +1,523 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Mirror Keep Phone</title>
+<meta name="description" content="Mirror Keep の保存版を、iPhone内に取り込んで検証・保管・選択するアプリ">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="MK Phone">
+<meta name="theme-color" content="#1f2a44">
+<style>
+:root{
+  --bg:#f4f5f8; --fg:#1b1f2a; --muted:#5d6577; --card:#ffffff; --line:#d9dce5;
+  --accent:#2b4a9b; --accent-fg:#ffffff; --ok:#17794a; --ng:#b3261e; --warn:#8a5a00;
+  --chip:#e9ecf4;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#111420; --fg:#e8eaf2; --muted:#9aa2b8; --card:#1a1f2e; --line:#2c3347;
+    --accent:#7f9cf5; --accent-fg:#0d1220; --ok:#5ad19a; --ng:#ff8a80; --warn:#f0c060;
+    --chip:#242b3f;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#111420; --fg:#e8eaf2; --muted:#9aa2b8; --card:#1a1f2e; --line:#2c3347;
+  --accent:#7f9cf5; --accent-fg:#0d1220; --ok:#5ad19a; --ng:#ff8a80; --warn:#f0c060;
+  --chip:#242b3f;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0; background:var(--bg); color:var(--fg);
+  font:16px/1.55 -apple-system,BlinkMacSystemFont,"Hiragino Sans","Yu Gothic UI",system-ui,sans-serif;
+  padding:max(16px,env(safe-area-inset-top)) max(16px,env(safe-area-inset-right)) max(24px,env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left));
+}
+main{max-width:720px;margin:0 auto}
+h1{font-size:22px;margin:4px 0 2px}
+h2{font-size:17px;margin:0 0 10px}
+.sub{color:var(--muted);font-size:14px;margin:0 0 16px}
+section{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin:0 0 16px}
+button,.btn{
+  appearance:none;-webkit-appearance:none;font:inherit;font-weight:600;
+  min-height:44px;padding:8px 16px;border-radius:10px;border:1px solid var(--line);
+  background:var(--chip);color:var(--fg);cursor:pointer;
+}
+button.primary{background:var(--accent);color:var(--accent-fg);border-color:transparent}
+button.danger{color:var(--ng)}
+button:disabled{opacity:.45;cursor:default}
+button:focus-visible,input:focus-visible,summary:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+input[type=file]{width:100%;font:inherit;color:var(--fg)}
+.row{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+.msg{margin:10px 0 0;padding:10px 12px;border-radius:10px;background:var(--chip);font-size:14px;white-space:pre-wrap;word-break:break-word}
+.msg.ok{border-left:4px solid var(--ok)}
+.msg.ng{border-left:4px solid var(--ng)}
+.msg.warn{border-left:4px solid var(--warn)}
+.app{margin:0 0 14px}
+.app h3{font-size:16px;margin:0 0 6px;word-break:break-all}
+.ver{border:1px solid var(--line);border-radius:12px;padding:12px;margin:0 0 10px}
+.ver.current{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
+.ver .top{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:4px}
+.badge{display:inline-block;font-size:12px;font-weight:700;padding:2px 8px;border-radius:999px;background:var(--chip);color:var(--muted)}
+.badge.cur{background:var(--accent);color:var(--accent-fg)}
+.badge.ok{color:var(--ok)} .badge.ng{color:var(--ng)}
+.meta{font-size:13px;color:var(--muted);word-break:break-all}
+.empty{color:var(--muted);font-size:14px}
+dl{margin:0;display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:14px}
+dt{color:var(--muted)} dd{margin:0;word-break:break-all}
+details{margin:6px 0 0;font-size:14px;color:var(--muted)}
+summary{cursor:pointer;min-height:32px}
+ul.cand{margin:6px 0 0;padding-left:20px;font-size:14px}
+</style>
+</head>
+<body>
+<main>
+  <h1>Mirror Keep Phone</h1>
+  <p class="sub">PCの Mirror Keep で書き出した保存版を、この端末に取り込んで、検証・保管します。通信は使いません。</p>
+
+  <section aria-labelledby="h-import">
+    <h2 id="h-import">① 取り込み</h2>
+    <input id="file" type="file" accept=".json,application/json" aria-label="書き出したバンドルファイル(.mkbundle.json)を選ぶ">
+    <div id="importMsg" class="msg" role="status" aria-live="polite" hidden></div>
+    <div id="preview" hidden>
+      <dl id="previewDl"></dl>
+      <div class="row">
+        <button id="doImport" class="primary" type="button">この版を取り込む</button>
+        <button id="cancelImport" type="button">やめる</button>
+      </div>
+    </div>
+    <details>
+      <summary>取り込みの流れ</summary>
+      <p>ファイルを読み、全ファイルの SHA-256 を確認します。1つでも合わなければ、取り込みません。確認に通ったものだけを、この端末に保存し、保存後にもう一度確認します。同じ版は上書きしません。</p>
+    </details>
+  </section>
+
+  <section aria-labelledby="h-list">
+    <h2 id="h-list">② 保存版</h2>
+    <div id="list"><p class="empty">読み込み中…</p></div>
+    <div id="listMsg" class="msg" role="status" aria-live="polite" hidden></div>
+  </section>
+
+  <section aria-labelledby="h-storage">
+    <h2 id="h-storage">③ 保存領域</h2>
+    <dl id="storageDl"></dl>
+    <div class="row">
+      <button id="persistBtn" type="button">消されにくくする（恒久保存を申請）</button>
+    </div>
+    <div id="storageMsg" class="msg" role="status" aria-live="polite" hidden></div>
+    <details>
+      <summary>大事なこと</summary>
+      <p>ブラウザーの保存領域は、端末の空きが少ないときや、長く使わないときに消されることがあります。元の <code>.mkbundle.json</code> は、消さずに別の場所（ファイルアプリ、iCloud Drive、外付けストレージ、PC）にも保管してください。保存版は自動では削除しません。</p>
+    </details>
+  </section>
+</main>
+
+<script>
+'use strict';
+/* ---------- 基本部品 ---------- */
+const $ = (s) => document.querySelector(s);
+const enc = new TextEncoder();
+const DB_NAME = 'mirror-keep-phone';
+const BUNDLE_FORMAT = 'mirror-keep-bundle-v1';
+const MAX_FILE_BYTES = 300 * 1024 * 1024;
+let db = null;
+let pending = null; // 検証済みで、取り込みの確認待ちのバンドル
+
+function fmtSize(n) {
+  let v = Number(n) || 0;
+  const u = ['B', 'KB', 'MB', 'GB'];
+  let i = 0;
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+  return (i === 0 ? v.toFixed(0) : v.toFixed(2)) + ' ' + u[i];
+}
+function fmtDate(s) {
+  if (!s) return '-';
+  const d = new Date(s);
+  if (isNaN(d)) return String(s).slice(0, 19).replace('T', ' ');
+  const p = (x) => String(x).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+}
+function el(tag, props, ...kids) {
+  const e = document.createElement(tag);
+  if (props) for (const [k, v] of Object.entries(props)) {
+    if (v == null || v === false) continue;
+    if (k === 'class') e.className = v;
+    else if (k === 'text') e.textContent = v;
+    else if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
+    else e.setAttribute(k, v);
+  }
+  for (const kid of kids) if (kid != null) e.append(kid);
+  return e; // 取り込んだ文字列は必ず textContent 経由。innerHTML は使わない。
+}
+function say(id, text, kind) {
+  const n = $(id);
+  if (!text) { n.hidden = true; n.textContent = ''; return; }
+  n.hidden = false;
+  n.className = 'msg' + (kind ? ' ' + kind : '');
+  n.textContent = text;
+}
+
+/* ---------- SHA-256 / base64 / パス ---------- */
+async function sha256Hex(bytes) {
+  const d = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(d), (b) => b.toString(16).padStart(2, '0')).join('');
+}
+function b64ToBytes(s) {
+  if (typeof s !== 'string' || s.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(s)) throw new Error('base64が不正です');
+  const bin = atob(s);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+function safePath(p) {
+  if (typeof p !== 'string' || !p || p.includes('\\') || p.includes('\0') || p.startsWith('/')) return false;
+  return p.split('/').every((x) => x !== '' && x !== '.' && x !== '..');
+}
+function cmpCodePoints(a, b) { // Python の sorted() と同じ、コードポイント順
+  const A = Array.from(a), B = Array.from(b);
+  const n = Math.min(A.length, B.length);
+  for (let i = 0; i < n; i++) {
+    const d = A[i].codePointAt(0) - B[i].codePointAt(0);
+    if (d) return d;
+  }
+  return A.length - B.length;
+}
+async function filesDigest(pairs) { // "path\tsha256" を改行で連結 → SHA-256（README の手順5）
+  const sorted = pairs.slice().sort((x, y) => cmpCodePoints(x[0], y[0]) || cmpCodePoints(x[1], y[1]));
+  return sha256Hex(enc.encode(sorted.map((p) => p[0] + '\t' + p[1]).join('\n')));
+}
+
+/* ---------- バンドル検証（Python側 verify_bundle と同じ手順） ---------- */
+async function verifyBundle(b) {
+  if (!b || typeof b !== 'object' || b.format !== BUNDLE_FORMAT || !Array.isArray(b.files)) {
+    return { ok: false, errors: ['認識できないバンドルです。'], files: [], total: 0 };
+  }
+  const errors = [];
+  if (typeof b.projectKey !== 'string' || !/^[A-Za-z0-9._-]{1,80}$/.test(b.projectKey)) errors.push('projectKey が不正です');
+  const vid = b.version && b.version.id;
+  if (typeof vid !== 'string' || !/^\d{8}-\d{6}-\d{6}-[0-9a-f]{6}$/.test(vid)) errors.push('version.id が不正です');
+  const seen = new Set(), pairs = [], files = [];
+  let total = 0;
+  for (const it of b.files) {
+    try {
+      const p = it && it.path;
+      if (!safePath(p)) { errors.push('unsafe path: ' + String(p)); continue; }
+      if (seen.has(p)) { errors.push('duplicate: ' + p); continue; }
+      seen.add(p);
+      if (it.encoding !== 'base64') { errors.push('unknown encoding: ' + p); continue; }
+      const bytes = b64ToBytes(it.data);
+      const h = await sha256Hex(bytes);
+      if (h !== it.sha256) errors.push('hash mismatch: ' + p);
+      if (bytes.length !== it.bytes) errors.push('size mismatch: ' + p);
+      total += bytes.length;
+      pairs.push([p, it.sha256]);
+      files.push({ path: p, sha256: h, bytes });
+    } catch (e) { errors.push('invalid entry: ' + ((e && e.message) || e)); }
+  }
+  if (b.fileCount !== b.files.length) errors.push('fileCount mismatch');
+  if (b.totalBytes !== total) errors.push('totalBytes mismatch');
+  if ((await filesDigest(pairs)) !== b.filesSha256) errors.push('filesSha256 mismatch');
+  return { ok: errors.length === 0, errors, files, total };
+}
+
+/* ---------- IndexedDB ---------- */
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const r = indexedDB.open(DB_NAME, 1);
+    r.onupgradeneeded = () => {
+      const d = r.result;
+      d.createObjectStore('versions', { keyPath: 'uid' });
+      d.createObjectStore('files', { keyPath: ['uid', 'path'] });
+      d.createObjectStore('meta', { keyPath: 'key' });
+    };
+    r.onsuccess = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+  });
+}
+const reqP = (r) => new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+const txDone = (t) => new Promise((res, rej) => {
+  t.oncomplete = () => res();
+  t.onabort = () => rej(t.error || new Error('保存が中断されました'));
+});
+const rangeOf = (uid) => IDBKeyRange.bound([uid, ''], [uid, '￿']);
+
+async function listVersions() {
+  const t = db.transaction(['versions', 'meta'], 'readonly');
+  const versions = await reqP(t.objectStore('versions').getAll());
+  const metas = await reqP(t.objectStore('meta').getAll());
+  const current = {};
+  for (const m of metas) if (m.key.startsWith('current:')) current[m.key.slice(8)] = m.uid;
+  versions.sort((a, b) => a.importedAt - b.importedAt);
+  return { versions, current };
+}
+
+// 保存済みの版を、端末内のデータから再計算して検証する。
+async function verifyStored(uid) {
+  const t = db.transaction(['versions', 'files'], 'readonly');
+  const v = await reqP(t.objectStore('versions').get(uid));
+  if (!v) throw new Error('保存版がありません');
+  const keys = await reqP(t.objectStore('files').getAllKeys(rangeOf(uid)));
+  const errors = [];
+  const pairs = [];
+  let total = 0;
+  for (const key of keys) { // トランザクションをまたがないよう、1件ずつ読む
+    const row = await reqP(db.transaction('files', 'readonly').objectStore('files').get(key));
+    const h = await sha256Hex(row.data);
+    if (h !== row.sha256) errors.push('hash mismatch: ' + row.path);
+    if (row.data.length !== row.bytes) errors.push('size mismatch: ' + row.path);
+    total += row.data.length;
+    pairs.push([row.path, h]);
+  }
+  if (keys.length !== v.fileCount) errors.push('fileCount mismatch');
+  if (total !== v.totalBytes) errors.push('totalBytes mismatch');
+  if ((await filesDigest(pairs)) !== v.filesSha256) errors.push('filesSha256 mismatch');
+  return { ok: errors.length === 0, errors, checked: keys.length };
+}
+async function setVerifyState(uid, ok) {
+  const t = db.transaction('versions', 'readwrite');
+  const s = t.objectStore('versions');
+  const v = await reqP(s.get(uid));
+  if (v) { v.verifyState = ok ? 'ok' : 'ng'; v.verifiedAt = Date.now(); s.put(v); }
+  await txDone(t);
+}
+
+/* ---------- 取り込み ---------- */
+async function onPickFile() {
+  const f = $('#file').files[0];
+  pending = null;
+  $('#preview').hidden = true;
+  say('#importMsg', '');
+  if (!f) return;
+  try {
+    if (f.size > MAX_FILE_BYTES) throw new Error('ファイルが大きすぎます（' + fmtSize(f.size) + '）。上限は ' + fmtSize(MAX_FILE_BYTES) + ' です。');
+    say('#importMsg', '読み込んで検証しています…', '');
+    let bundle;
+    try { bundle = JSON.parse(await f.text()); } catch (e) { throw new Error('JSONとして読めません。Mirror Keep の「選択版を書き出し…」で作ったファイルを選んでください。'); }
+    const r = await verifyBundle(bundle);
+    if (!r.ok) {
+      say('#importMsg', '検証に失敗したため、取り込みません。\n' + r.errors.slice(0, 8).join('\n') + (r.errors.length > 8 ? '\n…ほか ' + (r.errors.length - 8) + ' 件' : ''), 'ng');
+      return;
+    }
+    const uid = bundle.projectKey + '/' + bundle.version.id;
+    const exists = await reqP(db.transaction('versions', 'readonly').objectStore('versions').get(uid));
+    if (exists) { say('#importMsg', 'この版は、すでに取り込み済みです（上書きしません）。', 'warn'); return; }
+    pending = { bundle, files: r.files, total: r.total, uid };
+    const dl = $('#previewDl');
+    dl.textContent = '';
+    for (const [k, v] of [
+      ['アプリ', bundle.appName || bundle.projectKey], ['アプリキー', bundle.projectKey],
+      ['版ID', bundle.version.id], ['保存日時', fmtDate(bundle.version.created)],
+      ['種別', bundle.version.kind || '-'], ['ファイル数', String(r.files.length)], ['合計容量', fmtSize(r.total)]
+    ]) { dl.append(el('dt', { text: k }), el('dd', { text: v })); }
+    $('#preview').hidden = false;
+    say('#importMsg', 'SHA-256 の検証はすべて一致しました（' + r.files.length + ' files）。内容を確認して、取り込んでください。', 'ok');
+  } catch (e) {
+    say('#importMsg', String((e && e.message) || e), 'ng');
+  }
+}
+
+async function doImport() {
+  if (!pending) return;
+  const { bundle, files, total, uid } = pending;
+  $('#doImport').disabled = true;
+  try {
+    say('#importMsg', '保存しています…', '');
+    const rec = {
+      uid, projectKey: bundle.projectKey, appName: bundle.appName || bundle.projectKey,
+      versionId: bundle.version.id, created: bundle.version.created || '', kind: bundle.version.kind || '',
+      note: bundle.version.note || '', fileCount: files.length, totalBytes: total, filesSha256: bundle.filesSha256,
+      bundleCreated: bundle.created || '', importedAt: Date.now(), verifyState: 'pending', verifiedAt: null
+    };
+    const t = db.transaction(['versions', 'files'], 'readwrite'); // 1回のトランザクション＝全部入るか、何も入らないか
+    t.objectStore('versions').add(rec);
+    const fs = t.objectStore('files');
+    for (const f of files) fs.add({ uid, path: f.path, sha256: f.sha256, bytes: f.bytes.length, data: f.bytes });
+    await txDone(t);
+    const v = await verifyStored(uid); // 保存後の再確認
+    if (!v.ok) {
+      await removeVersion(uid); // 自分が今作った不完全な版だけを片付ける
+      say('#importMsg', '保存後の検証に失敗したため、この取り込みを取り消しました。\n' + v.errors.slice(0, 5).join('\n'), 'ng');
+      return;
+    }
+    await setVerifyState(uid, true);
+    pending = null;
+    $('#preview').hidden = true;
+    $('#file').value = '';
+    say('#importMsg', '取り込みました（保存後の検証も一致）。', 'ok');
+    const { current } = await listVersions();
+    await render();
+    if (!current[bundle.projectKey]) {
+      if (confirm('「' + rec.appName + '」には、まだ使用する版が選ばれていません。\nこの版を使用版にしますか？')) await selectVersion(uid, true);
+    }
+  } catch (e) {
+    if (e && e.name === 'QuotaExceededError') {
+      const cands = await deletionCandidates(total);
+      say('#importMsg', '保存領域が足りません。何も保存していません。\n保存版は自動では削除しません。不要な版を、ご自身で判断して削除してください。', 'ng');
+      showCandidates(cands);
+    } else {
+      say('#importMsg', '取り込みに失敗しました: ' + ((e && e.message) || e), 'ng');
+    }
+  } finally {
+    $('#doImport').disabled = false;
+  }
+}
+
+/* ---------- 一覧・操作 ---------- */
+async function removeVersion(uid) {
+  const t = db.transaction(['versions', 'files'], 'readwrite');
+  t.objectStore('versions').delete(uid);
+  t.objectStore('files').delete(rangeOf(uid));
+  await txDone(t);
+}
+async function deletionCandidates(bytesNeeded) { // 提示のみ。古い順、使用中の版と各アプリの最新版は除く
+  const { versions, current } = await listVersions();
+  const latest = {};
+  for (const v of versions) latest[v.projectKey] = v.uid;
+  const out = [];
+  let freed = 0;
+  for (const v of versions) {
+    if (freed >= bytesNeeded) break;
+    if (current[v.projectKey] === v.uid || latest[v.projectKey] === v.uid) continue;
+    out.push(v); freed += v.totalBytes;
+  }
+  return out;
+}
+function showCandidates(cands) {
+  const box = $('#importMsg');
+  if (!cands.length) { box.append(document.createTextNode('\n削除候補になる古い版は、ありません。')); return; }
+  const ul = el('ul', { class: 'cand' });
+  for (const v of cands) ul.append(el('li', { text: (v.appName || v.projectKey) + ' / ' + fmtDate(v.created) + ' / ' + fmtSize(v.totalBytes) }));
+  box.append(el('div', { text: '\n削除候補（古い順・提示のみ）:' }), ul);
+}
+
+async function selectVersion(uid, skipConfirm) {
+  const { versions } = await listVersions();
+  const v = versions.find((x) => x.uid === uid);
+  if (!v) return;
+  const sameApp = versions.filter((x) => x.projectKey === v.projectKey);
+  const isLatest = sameApp[sameApp.length - 1].uid === uid;
+  if (!skipConfirm) {
+    const ok = confirm('次の版を、使用版にします。\n\nアプリ: ' + (v.appName || v.projectKey) + '\n保存日時: ' + fmtDate(v.created) +
+      '\nファイル数: ' + v.fileCount + ' / 容量: ' + fmtSize(v.totalBytes) + (isLatest ? '' : '\n\n※ これは最新ではない、古い版です。') + '\n\n続けますか？');
+    if (!ok) return;
+  }
+  const t = db.transaction('meta', 'readwrite');
+  t.objectStore('meta').put({ key: 'current:' + v.projectKey, uid });
+  await txDone(t);
+  say('#listMsg', '「' + (v.appName || v.projectKey) + '」の使用版を、' + fmtDate(v.created) + ' の版にしました。', 'ok');
+  await render();
+}
+
+async function verifyOne(uid) {
+  say('#listMsg', '検証しています…', '');
+  try {
+    const r = await verifyStored(uid);
+    await setVerifyState(uid, r.ok);
+    say('#listMsg', r.ok ? 'SHA-256 の検証はすべて一致しました（' + r.checked + ' files）。' : '検証で不一致が見つかりました。\n' + r.errors.slice(0, 8).join('\n'), r.ok ? 'ok' : 'ng');
+  } catch (e) { say('#listMsg', String((e && e.message) || e), 'ng'); }
+  await render();
+}
+
+async function deleteOne(uid) {
+  const { versions, current } = await listVersions();
+  const v = versions.find((x) => x.uid === uid);
+  if (!v) return;
+  if (current[v.projectKey] === uid) { say('#listMsg', '使用中の版は削除できません。先に別の版を使用版にしてください。', 'warn'); return; }
+  const ok = confirm('この版を、この端末から削除します。元に戻せません。\n\nアプリ: ' + (v.appName || v.projectKey) + '\n保存日時: ' + fmtDate(v.created) +
+    '\nファイル数: ' + v.fileCount + ' / 容量: ' + fmtSize(v.totalBytes) + '\n\n元の .mkbundle.json が別の場所に残っていることを確認しましたか？\n削除しますか？');
+  if (!ok) return;
+  try {
+    await removeVersion(uid);
+    say('#listMsg', '削除しました。', 'ok');
+  } catch (e) { say('#listMsg', '削除に失敗しました: ' + ((e && e.message) || e), 'ng'); }
+  await render();
+}
+
+async function render() {
+  const { versions, current } = await listVersions();
+  const box = $('#list');
+  box.textContent = '';
+  if (!versions.length) { box.append(el('p', { class: 'empty', text: 'まだ保存版がありません。上の「取り込み」から、書き出したファイルを選んでください。' })); await renderStorage(); return; }
+  const byApp = new Map();
+  for (const v of versions) { if (!byApp.has(v.projectKey)) byApp.set(v.projectKey, []); byApp.get(v.projectKey).push(v); }
+  for (const [key, list] of byApp) {
+    const app = el('div', { class: 'app' }, el('h3', { text: (list[0].appName || key) + '  (' + key + ')' }));
+    if (!current[key]) app.append(el('p', { class: 'empty', text: '使用版は、まだ選ばれていません。' }));
+    list.forEach((v, i) => {
+      const isCur = current[key] === v.uid;
+      const isLatest = i === list.length - 1;
+      const stateText = v.verifyState === 'ok' ? '検証OK ' + fmtDate(v.verifiedAt) : v.verifyState === 'ng' ? '検証NG' : '未検証';
+      const top = el('div', { class: 'top' },
+        el('strong', { text: '#' + (i + 1) }),
+        isCur ? el('span', { class: 'badge cur', text: '使用中' }) : null,
+        isLatest ? el('span', { class: 'badge', text: '最新' }) : null,
+        el('span', { class: 'badge ' + (v.verifyState === 'ok' ? 'ok' : v.verifyState === 'ng' ? 'ng' : ''), text: stateText }),
+        v.kind === 'pre-restore' ? el('span', { class: 'badge', text: '復元前' }) : null);
+      const meta = el('div', { class: 'meta', text: fmtDate(v.created) + ' / ' + v.fileCount + ' files / ' + fmtSize(v.totalBytes) });
+      const btns = el('div', { class: 'row' },
+        el('button', { type: 'button', text: '検証', onclick: () => verifyOne(v.uid) }),
+        el('button', { type: 'button', class: 'primary', text: isCur ? '使用中' : '使用版にする…', disabled: isCur ? '' : null, onclick: () => selectVersion(v.uid, false) }),
+        el('button', { type: 'button', class: 'danger', text: '削除…', onclick: () => deleteOne(v.uid) }));
+      app.append(el('div', { class: 'ver' + (isCur ? ' current' : '') }, top, meta, btns));
+    });
+    box.append(app);
+  }
+  await renderStorage();
+}
+
+/* ---------- 保存領域 ---------- */
+async function renderStorage() {
+  const dl = $('#storageDl');
+  dl.textContent = '';
+  let usage = null, quota = null, persisted = null;
+  try {
+    if (navigator.storage && navigator.storage.estimate) { const e = await navigator.storage.estimate(); usage = e.usage; quota = e.quota; }
+    if (navigator.storage && navigator.storage.persisted) persisted = await navigator.storage.persisted();
+  } catch (e) { /* 取得できなくても動作に影響しない */ }
+  const { versions } = await listVersions();
+  const mine = versions.reduce((s, v) => s + v.totalBytes, 0);
+  for (const [k, v] of [
+    ['保存版の合計', versions.length + ' 件 / ' + fmtSize(mine)],
+    ['この端末での使用量', usage == null ? '取得できません' : fmtSize(usage) + (quota ? ' / 上限の目安 ' + fmtSize(quota) : '')],
+    ['恒久保存', persisted == null ? '不明' : persisted ? 'はい（消えにくい）' : 'いいえ（消えることがあります）']
+  ]) dl.append(el('dt', { text: k }), el('dd', { text: v }));
+}
+async function requestPersist() {
+  try {
+    if (!navigator.storage || !navigator.storage.persist) { say('#storageMsg', 'このブラウザーは、恒久保存の申請に対応していません。', 'warn'); return; }
+    const ok = await navigator.storage.persist();
+    say('#storageMsg', ok ? '恒久保存が許可されました。' : '許可されませんでした。ホーム画面に追加してから、もう一度お試しください。それでも、元のファイルは別の場所に保管してください。', ok ? 'ok' : 'warn');
+  } catch (e) { say('#storageMsg', String((e && e.message) || e), 'ng'); }
+  await renderStorage();
+}
+
+/* ---------- 起動 ---------- */
+async function main() {
+  if (!window.indexedDB || !window.crypto || !crypto.subtle) {
+    say('#importMsg', 'この環境では動作しません（IndexedDB または SHA-256 が使えません）。HTTPS で開いているか、確認してください。', 'ng');
+    $('#file').disabled = true;
+    return;
+  }
+  try {
+    db = await openDB();
+  } catch (e) {
+    say('#importMsg', '保存領域を開けません: ' + ((e && e.message) || e), 'ng');
+    $('#file').disabled = true;
+    return;
+  }
+  $('#file').addEventListener('change', onPickFile);
+  $('#doImport').addEventListener('click', doImport);
+  $('#cancelImport').addEventListener('click', () => { pending = null; $('#preview').hidden = true; $('#file').value = ''; say('#importMsg', ''); });
+  $('#persistBtn').addEventListener('click', requestPersist);
+  await render();
+  if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  }
+}
+main();
+</script>
+</body>
+</html>
