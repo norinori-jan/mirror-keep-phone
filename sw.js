@@ -1,7 +1,8 @@
 'use strict';
 // Mirror Keep Phone — アプリ本体(画面)をオフラインで開くための Service Worker。
 // 取り込んだ保存版のデータは IndexedDB にあり、ここでは扱いません。
-const CACHE = 'mkp-cache-v1';
+// ネットワーク優先: オンラインなら常に最新の画面、オフラインなら、前回のコピーで開きます。
+const CACHE = 'mkp-cache-v2';
 const ASSETS = ['./', './index.html', './manifest.webmanifest', './apple-touch-icon.png', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', (event) => {
@@ -20,9 +21,9 @@ self.addEventListener('fetch', (event) => {
   const req = event.request;
   if (req.method !== 'GET' || new URL(req.url).origin !== self.location.origin) return;
   event.respondWith(
-    caches.match(req).then((hit) => hit || fetch(req).then((res) => {
+    fetch(req).then((res) => {
       if (res && res.ok) { const copy = res.clone(); caches.open(CACHE).then((c) => c.put(req, copy)); }
       return res;
-    }).catch(() => (req.mode === 'navigate' ? caches.match('./index.html') : Response.error())))
+    }).catch(() => caches.match(req).then((hit) => hit || (req.mode === 'navigate' ? caches.match('./index.html') : Response.error())))
   );
 });

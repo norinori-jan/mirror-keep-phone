@@ -56,6 +56,8 @@ input[type=file]{width:100%;font:inherit;color:var(--fg)}
 .msg.ok{border-left:4px solid var(--ok)}
 .msg.ng{border-left:4px solid var(--ng)}
 .msg.warn{border-left:4px solid var(--warn)}
+#exportPanel{white-space:normal}
+#exportText{white-space:pre-wrap}
 .app{margin:0 0 14px}
 .app h3{font-size:16px;margin:0 0 6px;word-break:break-all}
 .ver{border:1px solid var(--line);border-radius:12px;padding:12px;margin:0 0 10px}
@@ -99,6 +101,14 @@ ul.cand{margin:6px 0 0;padding-left:20px;font-size:14px}
     <h2 id="h-list">② 保存版</h2>
     <div id="list"><p class="empty">読み込み中…</p></div>
     <div id="listMsg" class="msg" role="status" aria-live="polite" hidden></div>
+    <div id="exportPanel" class="msg ok" role="status" aria-live="polite" hidden>
+      <div id="exportText"></div>
+      <div class="row">
+        <button id="shareBtn" class="primary" type="button">共有・保存…</button>
+        <button id="dlBtn" type="button">ダウンロード</button>
+        <button id="closeExport" type="button">閉じる</button>
+      </div>
+    </div>
   </section>
 
   <section aria-labelledby="h-storage">
@@ -111,8 +121,10 @@ ul.cand{margin:6px 0 0;padding-left:20px;font-size:14px}
     <details>
       <summary>大事なこと</summary>
       <p>ブラウザーの保存領域は、端末の空きが少ないときや、長く使わないときに消されることがあります。元の <code>.mkbundle.json</code> は、消さずに別の場所（ファイルアプリ、iCloud Drive、外付けストレージ、PC）にも保管してください。保存版は自動では削除しません。</p>
+      <p>各版の「書き出し…」で、この端末の保存版を、同じ形式のファイルに書き出せます。書き出す前に検証し、書き出した直後にも検証します。</p>
     </details>
   </section>
+  <p class="sub">Mirror Keep Phone ver 2（書き出し対応）</p>
 </main>
 
 <script>
@@ -139,6 +151,14 @@ function fmtDate(s) {
   if (isNaN(d)) return String(s).slice(0, 19).replace('T', ' ');
   const p = (x) => String(x).padStart(2, '0');
   return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+}
+function paint() { // 画面の描き直しを待つ（確認ダイアログの前に使う）
+  return new Promise((resolve) => {
+    let done = false;
+    const fin = () => { if (!done) { done = true; resolve(); } };
+    requestAnimationFrame(() => setTimeout(fin, 0));
+    setTimeout(fin, 150);
+  });
 }
 function el(tag, props, ...kids) {
   const e = document.createElement(tag);
@@ -349,6 +369,7 @@ async function doImport() {
     say('#importMsg', '取り込みました（保存後の検証も一致）。', 'ok');
     const { current } = await listVersions();
     await render();
+    await paint(); // 確認画面は描画を止めるので、先に画面を更新しておく
     if (!current[bundle.projectKey]) {
       if (confirm('「' + rec.appName + '」には、まだ使用する版が選ばれていません。\nこの版を使用版にしますか？')) await selectVersion(uid, true);
     }
@@ -459,6 +480,7 @@ async function render() {
       const meta = el('div', { class: 'meta', text: fmtDate(v.created) + ' / ' + v.fileCount + ' files / ' + fmtSize(v.totalBytes) });
       const btns = el('div', { class: 'row' },
         el('button', { type: 'button', text: '検証', onclick: () => verifyOne(v.uid) }),
+        el('button', { type: 'button', text: '書き出し…', onclick: () => prepareExport(v.uid) }),
         el('button', { type: 'button', class: 'primary', text: isCur ? '使用中' : '使用版にする…', disabled: isCur ? '' : null, onclick: () => selectVersion(v.uid, false) }),
         el('button', { type: 'button', class: 'danger', text: '削除…', onclick: () => deleteOne(v.uid) }));
       app.append(el('div', { class: 'ver' + (isCur ? ' current' : '') }, top, meta, btns));
@@ -466,6 +488,84 @@ async function render() {
     box.append(app);
   }
   await renderStorage();
+}
+
+/* ---------- 書き出し（この端末の保存版 → ファイル） ---------- */
+let exportReady = null; // { file, name, size }
+function bytesToB64(u8) {
+  let s = '';
+  const CH = 0x8000;
+  for (let i = 0; i < u8.length; i += CH) s += String.fromCharCode.apply(null, u8.subarray(i, i + CH));
+  return btoa(s);
+}
+function bundleName(appName, versionId) { // PC側 default_bundle_name と同じ規則
+  const clean = (String(appName).replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^[.\-_]+|[.\-_]+$/g, '') || 'app').slice(0, 48);
+  return clean + '_' + versionId + '.mkbundle.json';
+}
+function closeExport() { exportReady = null; $('#exportPanel').hidden = true; $('#exportText').textContent = ''; }
+async function prepareExport(uid) {
+  closeExport();
+  say('#listMsg', '書き出しの準備をしています（検証 → 作成 → 再検証）…', '');
+  try {
+    const first = await verifyStored(uid); // 壊れた版は書き出さない
+    if (!first.ok) {
+      await setVerifyState(uid, false);
+      say('#listMsg', 'この版は検証に失敗したため、書き出しません。\n' + first.errors.slice(0, 5).join('\n'), 'ng');
+      await render();
+      return;
+    }
+    const v = await reqP(db.transaction('versions', 'readonly').objectStore('versions').get(uid));
+    const keys = await reqP(db.transaction('files', 'readonly').objectStore('files').getAllKeys(rangeOf(uid)));
+    const entries = [];
+    for (const key of keys) {
+      const row = await reqP(db.transaction('files', 'readonly').objectStore('files').get(key));
+      entries.push({ path: row.path, sha256: row.sha256, bytes: row.bytes, encoding: 'base64', data: bytesToB64(row.data) });
+    }
+    entries.sort((a, b) => cmpCodePoints(a.path, b.path));
+    const bundle = {
+      format: BUNDLE_FORMAT, created: new Date().toISOString(), exportedBy: 'mirror-keep-phone',
+      appName: v.appName, projectKey: v.projectKey,
+      version: { id: v.versionId, created: v.created, kind: v.kind, note: v.note },
+      fileCount: entries.length, totalBytes: v.totalBytes, filesSha256: v.filesSha256, files: entries
+    };
+    const text = JSON.stringify(bundle);
+    const check = await verifyBundle(JSON.parse(text)); // 作ったファイルを読み直して、取り込み時と同じ検証
+    if (!check.ok) throw new Error('書き出しファイルの検証に失敗しました: ' + check.errors.slice(0, 3).join(' / '));
+    const name = bundleName(v.appName || v.projectKey, v.versionId);
+    const file = new File([text], name, { type: 'application/json' });
+    exportReady = { file, name, size: file.size };
+    $('#exportText').textContent = '書き出しの準備ができました（検証済み）。\n' + name + '\n' + fmtSize(file.size) +
+      '\n\n「共有・保存…」を押して、「ファイルに保存」を選んでください。保存先は、ファイルアプリの「このiPhone内」や、外付けストレージです。';
+    $('#exportPanel').hidden = false;
+    say('#listMsg', '');
+  } catch (e) {
+    say('#listMsg', '書き出しに失敗しました: ' + ((e && e.message) || e), 'ng');
+  }
+}
+async function shareExport() { // 押した直後に、同期的に共有画面を開く（iOSの制約）
+  if (!exportReady) return;
+  const { file } = exportReady;
+  if (!(navigator.canShare && navigator.canShare({ files: [file] }))) {
+    say('#listMsg', 'この環境では、共有画面を開けません。「ダウンロード」を使ってください。', 'warn');
+    return;
+  }
+  try {
+    await navigator.share({ files: [file], title: file.name });
+    say('#listMsg', '共有画面を閉じました。保存先に、ファイルがあることを確認してください。', 'ok');
+  } catch (e) {
+    if (e && e.name === 'AbortError') say('#listMsg', '共有をキャンセルしました。準備したファイルは、そのまま使えます。', 'warn');
+    else say('#listMsg', '共有に失敗しました。「ダウンロード」を試してください。\n' + ((e && e.message) || e), 'ng');
+  }
+}
+function downloadExport() {
+  if (!exportReady) return;
+  const url = URL.createObjectURL(exportReady.file);
+  const a = el('a', { href: url, download: exportReady.name });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+  say('#listMsg', 'ダウンロードを開始しました。ファイルアプリの「ダウンロード」を確認してください。', 'ok');
 }
 
 /* ---------- 保存領域 ---------- */
@@ -512,6 +612,9 @@ async function main() {
   $('#doImport').addEventListener('click', doImport);
   $('#cancelImport').addEventListener('click', () => { pending = null; $('#preview').hidden = true; $('#file').value = ''; say('#importMsg', ''); });
   $('#persistBtn').addEventListener('click', requestPersist);
+  $('#shareBtn').addEventListener('click', shareExport);
+  $('#dlBtn').addEventListener('click', downloadExport);
+  $('#closeExport').addEventListener('click', closeExport);
   await render();
   if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
     navigator.serviceWorker.register('sw.js').catch(() => {});
