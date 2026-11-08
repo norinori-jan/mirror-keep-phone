@@ -58,6 +58,13 @@ input[type=file]{width:100%;font:inherit;color:var(--fg)}
 .msg.warn{border-left:4px solid var(--warn)}
 #exportPanel{white-space:normal}
 #exportText{white-space:pre-wrap}
+#runOverlay{position:fixed;inset:0;z-index:50;background:var(--bg);display:flex;flex-direction:column}
+#runOverlay[hidden]{display:none}
+#runBar{display:flex;align-items:center;gap:8px;padding:max(8px,env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) 8px max(12px,env(safe-area-inset-left));border-bottom:1px solid var(--line);background:var(--card)}
+#runBar button{min-height:40px;padding:6px 12px}
+#runTitle{flex:1;min-width:0;font-size:13px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#runFrame{flex:1;width:100%;border:0;background:#fff}
+#runMsg{margin:12px 16px}
 .app{margin:0 0 14px}
 .app h3{font-size:16px;margin:0 0 6px;word-break:break-all}
 .ver{border:1px solid var(--line);border-radius:12px;padding:12px;margin:0 0 10px}
@@ -124,8 +131,18 @@ ul.cand{margin:6px 0 0;padding-left:20px;font-size:14px}
       <p>各版の「書き出し…」で、この端末の保存版を、同じ形式のファイルに書き出せます。書き出す前に検証し、書き出した直後にも検証します。</p>
     </details>
   </section>
-  <p class="sub">Mirror Keep Phone ver 2（書き出し対応）</p>
+  <p class="sub">Mirror Keep Phone ver 3（動かす機能・書き出し対応）</p>
 </main>
+
+<div id="runOverlay" hidden role="dialog" aria-label="保存版の実行">
+  <div id="runBar">
+    <button id="runClose" type="button">← 戻る</button>
+    <span id="runTitle"></span>
+    <button id="runReload" type="button">再読込</button>
+  </div>
+  <div id="runMsg" class="msg ng" hidden></div>
+  <iframe id="runFrame" title="保存版のアプリ"></iframe>
+</div>
 
 <script>
 'use strict';
@@ -448,7 +465,7 @@ async function deleteOne(uid) {
   if (!v) return;
   if (current[v.projectKey] === uid) { say('#listMsg', '使用中の版は削除できません。先に別の版を使用版にしてください。', 'warn'); return; }
   const ok = confirm('この版を、この端末から削除します。元に戻せません。\n\nアプリ: ' + (v.appName || v.projectKey) + '\n保存日時: ' + fmtDate(v.created) +
-    '\nファイル数: ' + v.fileCount + ' / 容量: ' + fmtSize(v.totalBytes) + '\n\n元の .mkbundle.json が別の場所に残っていることを確認しましたか？\n削除しますか？');
+    '\nファイル数: ' + v.fileCount + ' / 容量: ' + fmtSize(v.totalBytes) + '\n\n元の .mkbundle.json が別の場所に残っていることを確認しましたか？\n（この版の中で作られたデータは、残ります。「データ消去…」で別に消せます）\n削除しますか？');
   if (!ok) return;
   try {
     await removeVersion(uid);
@@ -480,7 +497,9 @@ async function render() {
       const meta = el('div', { class: 'meta', text: fmtDate(v.created) + ' / ' + v.fileCount + ' files / ' + fmtSize(v.totalBytes) });
       const btns = el('div', { class: 'row' },
         el('button', { type: 'button', text: '検証', onclick: () => verifyOne(v.uid) }),
+        el('button', { type: 'button', class: 'primary', text: '開く', onclick: () => openRun(v.uid) }),
         el('button', { type: 'button', text: '書き出し…', onclick: () => prepareExport(v.uid) }),
+        el('button', { type: 'button', class: 'danger', text: 'データ消去…', onclick: () => clearRunData(v.uid) }),
         el('button', { type: 'button', class: 'primary', text: isCur ? '使用中' : '使用版にする…', disabled: isCur ? '' : null, onclick: () => selectVersion(v.uid, false) }),
         el('button', { type: 'button', class: 'danger', text: '削除…', onclick: () => deleteOne(v.uid) }));
       app.append(el('div', { class: 'ver' + (isCur ? ' current' : '') }, top, meta, btns));
@@ -568,6 +587,110 @@ function downloadExport() {
   say('#listMsg', 'ダウンロードを開始しました。ファイルアプリの「ダウンロード」を確認してください。', 'ok');
 }
 
+/* ---------- 動かす（この端末内の保存版を、分離した保存領域で起動） ---------- */
+const runPrefix = (uid) => 'mkrun:' + uid + ':'; // Service Worker 側の差し込みと同じ規則
+let runUid = null;
+function runUrl(v) {
+  return new URL('run/' + encodeURIComponent(v.projectKey) + '/' + encodeURIComponent(v.versionId) + '/', location.href).href;
+}
+// この端末のブラウザーで、保存領域の差し替え（分離）ができるかを、起動の前に試す。できなければ動かさない。
+function canIsolate() {
+  const f = document.createElement('iframe');
+  f.style.display = 'none';
+  document.body.append(f);
+  try {
+    const w = f.contentWindow;
+    for (const name of ['localStorage', 'sessionStorage', 'indexedDB']) {
+      const marker = {};
+      Object.defineProperty(w, name, { configurable: true, get() { return marker; } });
+      if (w[name] !== marker) return false;
+    }
+    return true;
+  } catch (e) { return false; } finally { f.remove(); }
+}
+function showRunError(text) { const m = $('#runMsg'); m.hidden = false; m.textContent = text; $('#runFrame').src = 'about:blank'; }
+async function openRun(uid) {
+  say('#listMsg', '');
+  if (!('serviceWorker' in navigator) || !navigator.serviceWorker.controller) {
+    say('#listMsg', 'このアプリを一度閉じて、開き直してください（初回だけ必要です）。開き直したあとに、もう一度「開く」を押してください。', 'warn');
+    return;
+  }
+  if (!canIsolate()) {
+    say('#listMsg', 'このブラウザーでは、データを分離できないため、動かせません。本物のアプリのデータを守るため、起動しません。', 'ng');
+    return;
+  }
+  try {
+    say('#listMsg', '起動前に、保存版を検証しています…', '');
+    const r = await verifyStored(uid);
+    await setVerifyState(uid, r.ok);
+    if (!r.ok) { say('#listMsg', '検証に失敗した版は、動かしません。\n' + r.errors.slice(0, 5).join('\n'), 'ng'); await render(); return; }
+    const { versions } = await listVersions();
+    const v = versions.find((x) => x.uid === uid);
+    if (!v) return;
+    const n = versions.filter((x) => x.projectKey === v.projectKey).findIndex((x) => x.uid === uid) + 1;
+    runUid = uid;
+    $('#runTitle').textContent = (v.appName || v.projectKey) + ' #' + n + '（分離データ）';
+    $('#runMsg').hidden = true;
+    $('#runOverlay').hidden = false;
+    document.body.style.overflow = 'hidden';
+    $('#runFrame').src = runUrl(v);
+    watchRun(uid);
+    say('#listMsg', '');
+  } catch (e) { say('#listMsg', '起動に失敗しました: ' + ((e && e.message) || e), 'ng'); }
+}
+function closeRun() {
+  $('#runOverlay').hidden = true;
+  $('#runFrame').src = 'about:blank';
+  document.body.style.overflow = '';
+  runUid = null;
+}
+const RUN_STOP_TEXT = 'データの分離が有効になっていないため、安全のために停止しました。本物のアプリのデータには、触れていません。';
+function watchRun(uid) { // 読み込み完了の通知が来なくても、一定時間内に分離が確認できなければ止める
+  const started = Date.now();
+  const tick = () => {
+    if (runUid !== uid) return;
+    let ok = false;
+    try { ok = $('#runFrame').contentWindow.__mkIsolated === true; } catch (e) { ok = false; }
+    if (ok) return;
+    if (Date.now() - started > 8000) { showRunError(RUN_STOP_TEXT); return; }
+    setTimeout(tick, 150);
+  };
+  setTimeout(tick, 150);
+}
+window.addEventListener('message', (ev) => { if (runUid && ev.data && ev.data.mkBlocked === true) showRunError(RUN_STOP_TEXT); });
+function onRunFrameLoad() {
+  if (!runUid) return;
+  const f = $('#runFrame');
+  if (f.src === 'about:blank' || !f.src) return;
+  let isolated = false;
+  try { isolated = f.contentWindow.__mkIsolated === true; } catch (e) { isolated = false; }
+  if (!isolated) {
+    showRunError(RUN_STOP_TEXT);
+  }
+}
+async function clearRunData(uid) {
+  const { versions } = await listVersions();
+  const v = versions.find((x) => x.uid === uid);
+  if (!v) return;
+  if (!confirm('この版の中で作られたデータを、消します。元に戻せません。\n\nアプリ: ' + (v.appName || v.projectKey) + '\n保存日時: ' + fmtDate(v.created) +
+    '\n\n・保存版そのもの（ファイル）は消えません\n・本物のアプリや、他の版のデータには、影響しません\n\n消しますか？')) return;
+  try {
+    const p = runPrefix(uid);
+    for (const store of [localStorage, sessionStorage]) {
+      const ks = [];
+      for (let i = 0; i < store.length; i++) { const k = store.key(i); if (k && k.startsWith(p)) ks.push(k); }
+      ks.forEach((k) => store.removeItem(k));
+    }
+    if (indexedDB.databases) {
+      for (const d of await indexedDB.databases()) {
+        if (d.name && d.name.startsWith(p)) await new Promise((res) => { const q = indexedDB.deleteDatabase(d.name); q.onsuccess = q.onerror = q.onblocked = () => res(); });
+      }
+    }
+    if (window.caches) for (const k of await caches.keys()) if (k.startsWith(p)) await caches.delete(k);
+    say('#listMsg', 'この版のデータを消しました。', 'ok');
+  } catch (e) { say('#listMsg', '消去に失敗しました: ' + ((e && e.message) || e), 'ng'); }
+}
+
 /* ---------- 保存領域 ---------- */
 async function renderStorage() {
   const dl = $('#storageDl');
@@ -615,6 +738,9 @@ async function main() {
   $('#shareBtn').addEventListener('click', shareExport);
   $('#dlBtn').addEventListener('click', downloadExport);
   $('#closeExport').addEventListener('click', closeExport);
+  $('#runClose').addEventListener('click', closeRun);
+  $('#runReload').addEventListener('click', () => { if (runUid) { $('#runMsg').hidden = true; try { $('#runFrame').contentWindow.location.reload(); } catch (e) { $('#runFrame').src = $('#runFrame').src; } } });
+  $('#runFrame').addEventListener('load', onRunFrameLoad);
   await render();
   if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
     navigator.serviceWorker.register('sw.js').catch(() => {});
