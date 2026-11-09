@@ -86,10 +86,11 @@ ul.cand{margin:6px 0 0;padding-left:20px;font-size:14px}
 <main>
   <h1>Mirror Keep Phone</h1>
   <p class="sub">PCの Mirror Keep で書き出した保存版を、この端末に取り込んで、検証・保管します。通信は使いません。</p>
+  <p class="sub">iCloud Drive で受け取るとき：「ファイルを選択」を押し、「iCloud Drive」→「MKExport」を開いて、取り込みたいファイル（複数可）を選びます。</p>
 
   <section aria-labelledby="h-import">
     <h2 id="h-import">① 取り込み</h2>
-    <input id="file" type="file" accept=".json,application/json" aria-label="書き出したバンドルファイル(.mkbundle.json)を選ぶ">
+    <input id="file" type="file" multiple accept=".json,application/json" aria-label="書き出したバンドルファイル(.mkbundle.json)を選ぶ">
     <div id="importMsg" class="msg" role="status" aria-live="polite" hidden></div>
     <div id="preview" hidden>
       <dl id="previewDl"></dl>
@@ -322,52 +323,71 @@ async function setVerifyState(uid, ok) {
 }
 
 /* ---------- 取り込み ---------- */
+async function checkOneFile(f) { // 1ファイルを検証する。取り込める → {item}、取り込まない → {skip: 理由}
+  if (f.size > MAX_FILE_BYTES) return { skip: 'ファイルが大きすぎます（' + fmtSize(f.size) + '）。上限は ' + fmtSize(MAX_FILE_BYTES) + ' です。' };
+  let bundle;
+  try { bundle = JSON.parse(await f.text()); } catch (e) { return { skip: 'JSONとして読めません。Mirror Keep の「選択版を書き出し…」で作ったファイルを選んでください。' }; }
+  const r = await verifyBundle(bundle);
+  if (!r.ok) return { skip: '検証に失敗したため、取り込みません。\n' + r.errors.slice(0, 8).join('\n') + (r.errors.length > 8 ? '\n…ほか ' + (r.errors.length - 8) + ' 件' : ''), failed: true };
+  const uid = bundle.projectKey + '/' + bundle.version.id;
+  const exists = await reqP(db.transaction('versions', 'readonly').objectStore('versions').get(uid));
+  if (exists) return { skip: 'この版は、すでに取り込み済みです（上書きしません）。', already: true };
+  return { item: { bundle, files: r.files, total: r.total, uid, name: f.name } };
+}
+
 async function onPickFile() {
-  const f = $('#file').files[0];
+  const list = Array.from($('#file').files || []);
   pending = null;
   $('#preview').hidden = true;
   say('#importMsg', '');
-  if (!f) return;
+  if (!list.length) return;
   try {
-    if (f.size > MAX_FILE_BYTES) throw new Error('ファイルが大きすぎます（' + fmtSize(f.size) + '）。上限は ' + fmtSize(MAX_FILE_BYTES) + ' です。');
-    say('#importMsg', '読み込んで検証しています…', '');
-    let bundle;
-    try { bundle = JSON.parse(await f.text()); } catch (e) { throw new Error('JSONとして読めません。Mirror Keep の「選択版を書き出し…」で作ったファイルを選んでください。'); }
-    const r = await verifyBundle(bundle);
-    if (!r.ok) {
-      say('#importMsg', '検証に失敗したため、取り込みません。\n' + r.errors.slice(0, 8).join('\n') + (r.errors.length > 8 ? '\n…ほか ' + (r.errors.length - 8) + ' 件' : ''), 'ng');
+    say('#importMsg', (list.length > 1 ? list.length + ' 個のファイルを' : '') + '読み込んで検証しています…', '');
+    const items = [], skips = [];
+    for (const f of list) {
+      const r = await checkOneFile(f);
+      if (r.item) items.push(r.item); else skips.push({ name: f.name, text: r.skip, failed: !!r.failed, already: !!r.already });
+    }
+    if (list.length === 1) { // 1ファイルのときは、従来どおりの表示
+      if (!items.length) { say('#importMsg', skips[0].text, skips[0].failed ? 'ng' : skips[0].already ? 'warn' : 'ng'); return; }
+    } else if (!items.length) {
+      say('#importMsg', '取り込めるファイルがありません。\n' + skips.map((x) => '・' + x.name + '：' + x.text.split('\n')[0]).join('\n'), 'ng');
       return;
     }
-    const uid = bundle.projectKey + '/' + bundle.version.id;
-    const exists = await reqP(db.transaction('versions', 'readonly').objectStore('versions').get(uid));
-    if (exists) { say('#importMsg', 'この版は、すでに取り込み済みです（上書きしません）。', 'warn'); return; }
-    pending = { bundle, files: r.files, total: r.total, uid };
+    pending = items;
     const dl = $('#previewDl');
     dl.textContent = '';
-    for (const [k, v] of [
-      ['アプリ', bundle.appName || bundle.projectKey], ['アプリキー', bundle.projectKey],
-      ['版ID', bundle.version.id], ['保存日時', fmtDate(bundle.version.created)],
-      ['種別', bundle.version.kind || '-'], ['ファイル数', String(r.files.length)], ['合計容量', fmtSize(r.total)]
-    ]) { dl.append(el('dt', { text: k }), el('dd', { text: v })); }
+    const kindText = (k) => ({ update: '更新', 'pre-restore': '復元前' })[k] || k || '-';
+    for (const it of items) {
+      const bundle = it.bundle;
+      if (items.length > 1) dl.append(el('dt', { text: '── ' + (bundle.appName || bundle.projectKey) + '（' + it.name + '）' }), el('dd', { text: '' }));
+      for (const [k, v] of [
+        ['アプリ', bundle.appName || bundle.projectKey], ['アプリキー', bundle.projectKey],
+        ['版ID', bundle.version.id], ['保存日時', fmtDate(bundle.version.created)],
+        ['種別', kindText(bundle.version.kind)], ['ファイル数', String(it.files.length)], ['合計容量', fmtSize(it.total)]
+      ]) { dl.append(el('dt', { text: k }), el('dd', { text: v })); }
+    }
+    $('#doImport').textContent = items.length > 1 ? 'この ' + items.length + ' 件を取り込む' : 'この版を取り込む';
     $('#preview').hidden = false;
-    say('#importMsg', 'SHA-256 の検証はすべて一致しました（' + r.files.length + ' files）。内容を確認して、取り込んでください。', 'ok');
+    const totalFiles = items.reduce((n, x) => n + x.files.length, 0);
+    let msg = 'SHA-256 の検証はすべて一致しました（' + totalFiles + ' files）。内容を確認して、取り込んでください。';
+    let kind = 'ok';
+    if (skips.length) { msg += '\n取り込まないもの（' + skips.length + ' 件）：\n' + skips.map((x) => '・' + x.name + '：' + x.text.split('\n')[0]).join('\n'); kind = 'warn'; }
+    say('#importMsg', msg, kind);
   } catch (e) {
     say('#importMsg', String((e && e.message) || e), 'ng');
   }
 }
 
-async function doImport() {
-  if (!pending) return;
-  const { bundle, files, total, uid } = pending;
-  $('#doImport').disabled = true;
+async function importOne(it) { // 1件を保存して、保存後に再検証する。{ok} か {error, quota, total}
+  const { bundle, files, total, uid } = it;
+  const rec = {
+    uid, projectKey: bundle.projectKey, appName: bundle.appName || bundle.projectKey,
+    versionId: bundle.version.id, created: bundle.version.created || '', kind: bundle.version.kind || '',
+    note: bundle.version.note || '', fileCount: files.length, totalBytes: total, filesSha256: bundle.filesSha256,
+    bundleCreated: bundle.created || '', importedAt: Date.now(), verifyState: 'pending', verifiedAt: null
+  };
   try {
-    say('#importMsg', '保存しています…', '');
-    const rec = {
-      uid, projectKey: bundle.projectKey, appName: bundle.appName || bundle.projectKey,
-      versionId: bundle.version.id, created: bundle.version.created || '', kind: bundle.version.kind || '',
-      note: bundle.version.note || '', fileCount: files.length, totalBytes: total, filesSha256: bundle.filesSha256,
-      bundleCreated: bundle.created || '', importedAt: Date.now(), verifyState: 'pending', verifiedAt: null
-    };
     const t = db.transaction(['versions', 'files'], 'readwrite'); // 1回のトランザクション＝全部入るか、何も入らないか
     t.objectStore('versions').add(rec);
     const fs = t.objectStore('files');
@@ -376,27 +396,50 @@ async function doImport() {
     const v = await verifyStored(uid); // 保存後の再確認
     if (!v.ok) {
       await removeVersion(uid); // 自分が今作った不完全な版だけを片付ける
-      say('#importMsg', '保存後の検証に失敗したため、この取り込みを取り消しました。\n' + v.errors.slice(0, 5).join('\n'), 'ng');
-      return;
+      return { error: '保存後の検証に失敗したため、この取り込みを取り消しました。\n' + v.errors.slice(0, 5).join('\n') };
     }
     await setVerifyState(uid, true);
+    return { ok: true, rec };
+  } catch (e) {
+    if (e && e.name === 'QuotaExceededError') return { quota: true, total };
+    return { error: '取り込みに失敗しました: ' + ((e && e.message) || e) };
+  }
+}
+
+async function doImport() {
+  if (!pending || !pending.length) return;
+  const items = pending;
+  $('#doImport').disabled = true;
+  try {
+    say('#importMsg', '保存しています…', '');
+    const done = [], problems = [];
+    for (const it of items) {
+      const r = await importOne(it);
+      if (r.ok) { done.push(r.rec); continue; }
+      if (r.quota) {
+        const cands = await deletionCandidates(r.total);
+        problems.push('保存領域が足りません。「' + (it.bundle.appName || it.bundle.projectKey) + '」は保存していません。\n保存版は自動では削除しません。不要な版を、ご自身で判断して削除してください。');
+        showCandidates(cands);
+        break; // 以降も入らない可能性が高いので、ここで止める
+      }
+      problems.push((it.name ? it.name + '：' : '') + r.error);
+    }
     pending = null;
     $('#preview').hidden = true;
     $('#file').value = '';
-    say('#importMsg', '取り込みました（保存後の検証も一致）。', 'ok');
-    const { current } = await listVersions();
+    if (done.length) {
+      say('#importMsg', (items.length === 1 ? '取り込みました（保存後の検証も一致）。' : done.length + ' 件を取り込みました（保存後の検証も一致）。') + (problems.length ? '\n取り込めなかったもの：\n' + problems.join('\n') : ''), problems.length ? 'warn' : 'ok');
+    } else {
+      say('#importMsg', problems.join('\n') || '取り込めませんでした。', 'ng');
+    }
     await render();
     await paint(); // 確認画面は描画を止めるので、先に画面を更新しておく
-    if (!current[bundle.projectKey]) {
-      if (confirm('「' + rec.appName + '」には、まだ使用する版が選ばれていません。\nこの版を使用版にしますか？')) await selectVersion(uid, true);
-    }
-  } catch (e) {
-    if (e && e.name === 'QuotaExceededError') {
-      const cands = await deletionCandidates(total);
-      say('#importMsg', '保存領域が足りません。何も保存していません。\n保存版は自動では削除しません。不要な版を、ご自身で判断して削除してください。', 'ng');
-      showCandidates(cands);
-    } else {
-      say('#importMsg', '取り込みに失敗しました: ' + ((e && e.message) || e), 'ng');
+    const { current } = await listVersions();
+    const asked = new Set();
+    for (const rec of done) { // 使用版が未選択のアプリだけ、1アプリにつき1回だけ確認する
+      if (current[rec.projectKey] || asked.has(rec.projectKey)) continue;
+      asked.add(rec.projectKey);
+      if (confirm('「' + rec.appName + '」には、まだ使用する版が選ばれていません。\nこの版を使用版にしますか？')) await selectVersion(rec.uid, true);
     }
   } finally {
     $('#doImport').disabled = false;
